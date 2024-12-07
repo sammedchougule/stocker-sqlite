@@ -1,15 +1,133 @@
-import sqlite3 from 'sqlite3';
-import { google } from "googleapis";
-import credentials from "./credentials.json" with { type: "json" };
+const { google } = require("googleapis");
+const credentials = require("./credentials.json"); // Google API credentials
+const sqlite3 = require('sqlite3').verbose();
+require('dotenv').config();
 
-const spreadsheetId = "1y-oRS9ena3yf-IgqPBHDWyVLETbty34gx_z-PJhTfmg"; // Replace with your spreadsheet ID
-const range = "nse"; // Replace with your sheet and range
 
-async function getGoogleSheetsDataAndSaveToSQLite() {
+
+function storeData(data) {
+  const db = new sqlite3.Database('./stocks.db');
+    
+  const chunkSize = 300; // Maximum number of rows per query (adjust if needed)
+  const stocks = data;
+
+  // Generate the placeholders for a single stock insert
+  const stockPlaceholder = '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
+  const fieldsPerStock = 26; // Number of fields in each stock object
+
+  // Split stocks into chunks
+  const chunks = [];
+  for (let i = 0; i < stocks.length; i += chunkSize) {
+      chunks.push(stocks.slice(i, i + chunkSize));
+  }
+
+  let insertedCount = 0;
+
+  db.serialize(() => {
+      db.run('BEGIN TRANSACTION');
+
+      chunks.forEach((chunk, index) => {
+          const values = chunk.flatMap(stock => [
+            stock.symbol,
+            stock.logo,
+            stock.view_chart,
+            stock.website_link,
+            stock.companyname,
+            stock.industry,
+            stock.sector,
+            stock.exchange,
+            stock.closeyest,
+            stock.priceopen,
+            stock.price,
+            stock.low,
+            stock.high,
+            stock.change,
+            stock.changepct,
+            stock.tradetime,
+            stock.volume,
+            stock.volumeavg,
+            stock.volumespike,
+            stock.month_high,
+            stock.month_low,
+            stock.month_hl_cross,
+            stock.high52,
+            stock.low52,
+            stock.year_hl_cross,
+            stock.marketcap,
+            stock.eps, 
+          ]);
+
+          const truncateQuery = 'DELETE FROM stocks';
+
+          db.run(truncateQuery, function (err) {
+              if (err) {
+                  console.error('Error truncating table:', err.message);
+              } else {
+                  const query = `
+                      INSERT INTO stocks (
+                         symbol,
+                          logo,
+                          view_chart,
+                          website_link,
+                          companyname,
+                          industry,
+                          sector,
+                          exchange,
+                          closeyest,
+                          priceopen,
+                          price,
+                          low,
+                          high,
+                          change,
+                          changepct,
+                          tradetime,
+                          volume,
+                          volumeavg,
+                          volumespike,
+                          month_high,
+                          month_low,
+                          month_hl_cross,
+                          high52,
+                          low52,
+                          year_hl_cross,
+                          marketcap,
+                          eps
+                      ) VALUES 
+                      ${chunk.map(() => stockPlaceholder).join(',')}
+                  `;
+
+                  db.run(query, values, function (err) {
+                      if (err) {
+                          console.error(`Error inserting chunk ${index + 1}:`, err.message);
+                      } else {
+                          insertedCount += this.changes;
+                      }
+                  });
+              }
+          });
+      });
+
+      db.run('COMMIT', (err) => {
+          if (err) {
+              console.error('Transaction commit failed:', err.message);
+              return
+          }
+      });
+  });
+  
+}
+
+
+// Google Sheets configuration
+const spreadsheetId = process.env.SPREADSHEET_ID; // Replace with your spreadsheet ID
+const range = process.env.RANGE; // Replace with your sheet and range
+
+// Fetch data from Google Sheets
+async function getGoogleSheetsData() {
   try {
     const auth = new google.auth.GoogleAuth({
       credentials,
-      scopes: ["https://www.googleapis.com/auth/spreadsheets.readonly"],
+      scopes: process.env.SCOPES.split(',') ?? [],
     });
 
     const sheets = google.sheets({ version: "v4", auth });
@@ -20,89 +138,35 @@ async function getGoogleSheetsDataAndSaveToSQLite() {
 
     if (!response.data.values || response.data.values.length === 0) {
       console.log("No data found in the Google Sheet.");
-      return;
+      return [];
     }
 
     const rows = response.data.values;
     const headers = rows[0]; // First row as headers
 
-    // Open SQLite database connection
-    const db = new sqlite3.Database("stocks_data.sqlite");
-
-    // Create table if not exists
-    const createTableQuery = `
-      CREATE TABLE IF NOT EXISTS stocks (
-        symbol TEXT DEFAULT NULL,
-        logo TEXT DEFAULT NULL,
-        view_chart TEXT DEFAULT NULL,
-        website_link TEXT DEFAULT NULL,
-        stock_name TEXT DEFAULT NULL,
-        industry TEXT DEFAULT NULL,
-        sector TEXT DEFAULT NULL,
-        exchange TEXT DEFAULT NULL,
-        close_yest TEXT DEFAULT NULL,
-        price_open TEXT DEFAULT NULL,
-        price REAL,
-        low TEXT DEFAULT NULL,
-        high TEXT DEFAULT NULL,
-        chg_rs TEXT DEFAULT NULL,
-        chg_percentage TEXT DEFAULT NULL,
-        volume TEXT DEFAULT NULL,
-        avg_volume TEXT DEFAULT NULL,
-        volume_spike TEXT DEFAULT NULL,
-        month_high TEXT DEFAULT NULL,
-        month_low TEXT DEFAULT NULL,
-        month_hl_cross TEXT DEFAULT NULL,
-        year_high TEXT DEFAULT NULL,
-        year_low TEXT DEFAULT NULL,
-        year_hl_cross TEXT DEFAULT NULL,
-        marketcap TEXT DEFAULT NULL,
-        eps TEXT DEFAULT NULL
-      );
-    `;
-    db.run(createTableQuery);
-
-    // Insert data into SQLite
-    const insertQuery = `
-      INSERT INTO stocks (
-        symbol, logo, view_chart, website_link, stock_name, industry, sector, exchange,
-        close_yest, price_open, price, low, high, chg_rs, chg_percentage, volume,
-        avg_volume, volume_spike, month_high, month_low, month_hl_cross, year_high,
-        year_low, year_hl_cross, marketcap, eps
-      ) VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-      );
-    `;
-
-    // Prepare and execute insertions
-    const stmt = db.prepare(insertQuery);
-    rows.slice(1).forEach((row) => {
-      const rowData = headers.map((header, index) => {
-        if (header === "price") {
-          return parseFloat(row[index] || "0") || 0;
-        }
-        return row[index] || "0"; // Default to "0" if cell is empty
+    // Dynamically map all rows to their respective headers
+    return rows.slice(1).map((row) => {
+      const rowData = {};
+      headers.forEach((header, index) => {
+        const value = row[index] || "0"; // Default to "0" if cell is empty
+        rowData[header] = header === "price" ? parseFloat(value) || 0 : value;
       });
-      stmt.run(rowData);
+      return rowData;
     });
-    stmt.finalize();
-
-    console.log("Data saved to SQLite database successfully.");
-
-    // Close the database connection
-    db.close();
   } catch (error) {
-    console.error("Error fetching or saving data:", error.message);
+    console.error("Error fetching data from Google Sheets:", error.message);
+    return [];
   }
 }
 
-// Call the function
-getGoogleSheetsDataAndSaveToSQLite();
 
+
+// Periodically fetch data and broadcast to WebSocket clients
 setInterval(async () => {
-  const stockData = await getGoogleSheetsDataAndSaveToSQLite() ?? [];
+  const stockData = await getGoogleSheetsData();
+  
   if (stockData.length > 0) {
     // console.log("Broadcasting stock data:", stockData);
-    broadcastData(stockData);
+    storeData(stockData);
   }
 }, 5000);

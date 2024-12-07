@@ -1,13 +1,13 @@
 import axios from 'axios';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:3000';
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
 export const stockService = {
     // Fetch stocks with pagination
-    getStocks: async (page = 1, limit = 10) => {
+    getStocks: async (page = 1, limit = 10, search = '') => {
         try {
             const response = await axios.get(`${API_BASE_URL}/stocks`, {
-                params: { page, limit }
+                params: { page, limit, search }
             });
             return response.data;
         } catch (error) {
